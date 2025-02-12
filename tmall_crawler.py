@@ -6,6 +6,8 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
+import logging
 
 import time
 import random
@@ -21,6 +23,9 @@ chrome_options = Options()
 # # 禁用视频和插件
 # chrome_options.add_argument("--disable-web-security")
 # chrome_options.add_argument("--disable-features=IsolateOrigins,site-per-process")
+
+# 启用性能日志
+chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
 
 driver = uc.Chrome(use_subprocess=True, version_main=128, options=chrome_options)
 driver.implicitly_wait(10)
@@ -74,135 +79,43 @@ def login_process():
         print("等待登录超时，请手动完成登录")
 
 def extract_product_info(driver, product_link):
+    """
+    进入商品详情页后，等待页面加载一段时间，再通过性能日志查找调用 mtop.taobao.pcdetail.data.get 的请求，
+    解析返回的 JSONP 数据，并返回解析后的结果。
+    """
     product_info = {
         "product_link": product_link,
-        "title": "",
-        "details": [],
-        "coupons": [],
-        "pre_discount_price": "",
-        "final_price": "",
-        "pricelist": []
+        "data": None  # 最终保存接口返回的数据
     }
 
-    try:
-        # 提取商品名称
-        product_info["title"] = driver.find_element(By.XPATH, "//h1[contains(@class, 'mainTitle--')]").text
+    # 等待页面加载并触发接口调用（根据实际情况调整等待时间）
+    time.sleep(5)
 
-        # 提取商品参数信息（使用通用的class和结构避免随机值)
-        param_elements = driver.find_elements(By.XPATH, "//div[contains(@class, 'infoItem--')]")
-        params_list = []
-        for param_elem in param_elements:
-            key = param_elem.find_element(By.XPATH, ".//div[contains(@class, 'infoItemTitle--')]").text
-            value = param_elem.find_element(By.XPATH, ".//div[contains(@class, 'infoItemContent--')]").text
-            params_list.append({"key": key, "value": value})
-
-        product_info["details"].append({
-            "type": "参数",
-            "value": params_list
-        })
-        
-        # 提取优惠券信息
-        coupon_elements = driver.find_elements(By.XPATH, "//div[contains(@class, 'couponText--')]")
-        for coupon in coupon_elements:
-            coupon_text = coupon.text
-            if coupon_text:  # 如果有优惠券文本
-                product_info["coupons"].append(coupon_text)
-
-        # 获取所有SPU项，模拟点击以获取价格变化
-        spu_items = driver.find_elements(By.XPATH, "//div[contains(@class, 'skuItem--')]")
-        pricelist = []
-        spu_item = spu_items[0]
-        value_items = spu_item.find_elements(By.XPATH, ".//div[contains(@class, 'valueItem--')]")
-        
-        previous_location = None  # 用于存储前一个 value_item 的位置
-        for index, value_item in enumerate(value_items):
-            # 跳过已禁用的项
-            if "isDisabled--" in value_item.get_attribute("class"):
-                continue
-            
-            # 获取当前 value_item 的位置
-            current_location = value_item.location
-            
-            # 判断是否需要滚动
-            if previous_location is not None and current_location['y'] - previous_location['y'] > 10:
-                keyboard_scroll(driver, 2, 0.3)  # 向下滚动
-
-            # 获取SKU名称和状态
-            spu_name = value_item.find_element(By.XPATH, ".//span[contains(@class, 'valueItemText--')]").text
-
-            # 模拟点击选择该SKU项
-            if "isSelected--" not in value_item.get_attribute("class"):
-                # 滚动到目标元素
-                actions = ActionChains(driver)
-                actions.move_to_element(value_item).click().perform()
-            time.sleep(random.uniform(0.3, 0.7))  # 模拟用户点击延迟
-
-            final_price_after_click = None
-            pre_discount_price_after_click = None
-            # 提取券前价和到手价
-            price_elements = driver.find_elements(By.XPATH, "//div[contains(@class, 'priceWrap--')]")
-            for price_elem in price_elements:
-                try:
-                    # 获取整个文本内容
-                    price_text = price_elem.text
-                    if price_text == '':
-                        continue
-
-                    # 检查是否包含“后”字，或者“前”字
-                    if "后" in price_text:
-                        # 提取“后”字之后的第一个完整数字，作为最终价格
-                        final_price_after_click = re.search(r'后.*?(\d+(?:\.\d+)?)', price_text, re.DOTALL)
-                        if final_price_after_click:
-                            final_price_after_click = final_price_after_click.group(1)
-                        else:
-                            final_price_after_click = None
-
-                    if "前" in price_text:
-                        # 提取“前”字之后的第一个完整数字，作为优惠前价格
-                        pre_discount_price_after_click = re.search(r'前.*?(\d+(?:\.\d+)?)', price_text, re.DOTALL)
-                        if pre_discount_price_after_click:
-                            pre_discount_price_after_click = pre_discount_price_after_click.group(1)
-                        else:
-                            pre_discount_price_after_click = None
-
-                    if "后" not in price_text and "前" not in price_text:
-                        # 如果没有“前”或者“后”，则视为最终价格
-                        final_price_after_click = re.search(r'(\d+(?:\.\d+)?)', price_text, re.DOTALL)
-                        if final_price_after_click:
-                            final_price_after_click = final_price_after_click.group(1)
-                        else:
-                            final_price_after_click = None
-
-                    print(f"最终价格: {final_price_after_click}, 优惠前价格: {pre_discount_price_after_click}")
-
-                except Exception as e:
-                    print(f"价格提取出错: {e}")
-
-            print(f"最终价格: {final_price_after_click}, 优惠前价格: {pre_discount_price_after_click}")
-            previous_location = current_location  # 更新前一个 value_item 的位置
-
-            # 保存该SKU对应的价格信息
-            pricelist.append({
-                "spu_name": spu_name,
-                "final_price": final_price_after_click,
-                "pre_discount_price": pre_discount_price_after_click
-            })
-
-        product_info["pricelist"] = pricelist
-
-        # 将商品信息保存为JSON文件
-        filename = f"{product_info['title']}.json"
-        filename = filename.replace("/", "_")  # 替换文件名中的非法字符
-        os.makedirs("product_info", exist_ok=True)  # 创建文件夹如果不存在
-        with open(os.path.join("product_info", filename), "w", encoding="utf-8") as f:
-            json.dump(product_info, f, ensure_ascii=False, indent=4)
-
-        print(f"商品信息已保存到文件: {filename}")
-        return product_info
-
-    except Exception as e:
-        print(f"提取商品信息时出错: {e}")
-        return None
+    logs = driver.get_log("performance")
+    for entry in logs:
+        try:
+            message = json.loads(entry["message"])["message"]
+            # 筛选目标请求（可以根据 URL 中的特定关键词判断）
+            if "Network.responseReceived" in message["method"]:
+                response_url = message["params"]["response"]["url"]
+                if "mtop.taobao.pcdetail.data.get" in response_url:
+                    request_id = message["params"]["requestId"]
+                    response = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": request_id})
+                    response_text = response.get("body", "")
+                    # 如果接口返回的是 JSONP，需要去掉回调包装
+                    pattern = r"^[^(]+\((.*)\)$"
+                    match = re.search(pattern, response_text)
+                    if match:
+                        json_str = match.group(1)
+                    else:
+                        json_str = response_text
+                    data = json.loads(json_str)
+                    product_info["data"] = data
+                    print("解析后的数据：", data)
+                    break  # 找到数据后退出循环
+        except Exception as e:
+            print(f"处理网络日志时出错: {e}")
+    return product_info
     
 def search_and_scrape():
     # 加载已爬取的商品ID
