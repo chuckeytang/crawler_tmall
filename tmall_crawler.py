@@ -6,7 +6,7 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
+from selenium.common.exceptions import NoAlertPresentException
 import logging
 
 import time
@@ -15,6 +15,11 @@ import urllib.parse
 import json
 import os
 import re
+import csv
+import simpleaudio as sa
+import datetime
+import pandas as pd
+import threading
 
 # 设置 Chrome 启动参数
 chrome_options = Options()
@@ -30,6 +35,8 @@ chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
 driver = uc.Chrome(use_subprocess=True, version_main=128, options=chrome_options)
 driver.implicitly_wait(10)
 
+stop_alert = False
+
 # 模拟键盘向下箭头键滚动页面
 def keyboard_scroll(driver, num_of_scrolls, pause_time):
     for _ in range(num_of_scrolls):
@@ -43,148 +50,304 @@ def mouse_wheel_scroll(driver, num_of_scrolls, pause_time):
         ActionChains(driver).move_to_element(body).click().send_keys(Keys.PAGE_DOWN).perform()
         time.sleep(random.random()*(pause_time/2)+pause_time/2)
 
+def save_sku_info(product_info, rate_info):
+    data = product_info.get("data", {}).get("data", {})
 
-# 加载已爬取商品ID的列表
-def load_scraped_product_ids(filename="scraped_product_ids.txt"):
-    if os.path.exists(filename):
-        with open(filename, "r") as f:
-            scraped_ids = set(f.read().splitlines())
-        return scraped_ids
-    return set()
+    # 1. 从 extensionInfoVO.infos 中提取 BASE_PROPS 和 DAILY_COUPON 信息
+    basePropsDict = {}
+    couponArray = []
+    extension_infos = data.get("componentsVO", {}) \
+                          .get("extensionInfoVO", {}) \
+                          .get("infos", [])
+    for info in extension_infos:
+        if info.get("type") == "BASE_PROPS":
+            # 遍历 items 数组，构造字典：key为 title，value 为 text（数组拼接成字符串）
+            for item in info.get("items", []):
+                title = item.get("title", "")
+                texts = item.get("text", [])
+                if isinstance(texts, list):
+                    basePropsDict[title] = " ".join(texts)
+                else:
+                    basePropsDict[title] = texts
+        elif info.get("type") == "DAILY_COUPON":
+            # 将 DAILY_COUPON 的 items 数组直接存入 couponArray
+            couponArray = info.get("items", [])
 
-# 更新已爬取商品ID的列表
-def update_scraped_product_ids(product_id, filename="scraped_product_ids.txt"):
-    with open(filename, "a") as f:
-        f.write(f"{product_id}\n")
+    # 2. 构造 skuInfoDict，先取出 skuCore.sku2info 字典
+    skuInfoDict = data.get("skuCore", {}).get("sku2info", {})
 
-# 保存商品信息到文件
-def save_product_info(product_info, product_id):
-    filename = f"product_info/{product_id}.json"
-    os.makedirs("product_info", exist_ok=True)  # 确保目录存在
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(product_info, f, ensure_ascii=False, indent=4)
-    print(f"商品信息已保存: {filename}")
+    # 3. 为每个 sku 增加 skuName（规格名称）
+    #    遍历 data.skuBase.skus，利用 propPath 获取第一组的 vid，再遍历 data.skuBase.props 找到对应的 name
+    skuBase = data.get("skuBase", {})
+    sku_skus = skuBase.get("skus", [])
+    sku_props = skuBase.get("props", [])
+    
+    # 从评论数据中获取“总评论数量”（对所有 sku 均相同）
+    total_comments = rate_info.get("data", {}).get("feedAllCountFuzzy", "")
+    for sku in sku_skus:
+        sku_id = sku.get("skuId")
+        propPath = sku.get("propPath", "")
+        # propPath 示例："1627207:60092;20122:368194910"，取第一个分号前的部分
+        first_group = propPath.split(";")[0]
+        parts = first_group.split(":")
+        vid = parts[1] if len(parts) >= 2 else ""
+        sku_name = ""
+        # 遍历所有 props 中的 values，寻找匹配的 vid
+        for prop in sku_props:
+            for value in prop.get("values", []):
+                if value.get("vid") == vid:
+                    sku_name = value.get("name", "")
+                    break
+            if sku_name:
+                break
+        # 将 skuName 写入 skuInfoDict 对应的 sku 数据中
+        if sku_id in skuInfoDict:
+            skuInfoDict[sku_id]["skuName"] = sku_name
+        else:
+            skuInfoDict[sku_id] = {"skuName": sku_name}
 
+    coupon_texts = []
+    for item in couponArray:
+        texts = item.get("text", [])
+        # texts 可能是列表，将列表中的字符串加入 coupon_texts
+        coupon_texts.extend(texts)
+    优惠信息_str = ",".join(coupon_texts)
+    
+    # 4. 根据 skuBase.skus 中每个 sku 构造一条记录
+    records = []
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    seller = data.get("seller", {})
+    item_info = data.get("item", {})
+    delivery_info = data.get("componentsVO", {}).get("deliveryVO", {})
+
+    for sku in sku_skus:
+        sku_id = sku.get("skuId")
+        sku_data = skuInfoDict.get(sku_id, {})
+        # 判断库存：若 quantity 为 "0" 则判定为“无货”，否则“在售”
+        quantity = sku_data.get("quantity", "0")
+        try:
+            sale_status = "在售" if int(quantity) != 0 else "无货"
+        except Exception:
+            sale_status = "在售"
+        
+        record = {
+            "收录日期": today_str,
+            "核查日期": "",
+            "平台": "天猫",
+            "店铺ID": seller.get("shopId", ""),
+            "店铺名称": seller.get("sellerNick", ""),
+            "SPU链接": f"https://item.taobao.com/item.htm?id={item_info.get('itemId', '')}",
+            "商品链接": f"https://detail.tmall.com/item.htm?id={item_info.get('itemId', '')}&skuId={sku_id}",
+            "平台一级类目": "留待完善",
+            "平台二级类目": "留待完善",
+            "平台三级类目": "留待完善",
+            "品牌名称": basePropsDict.get("品牌", ""),
+            "spu编码": item_info.get("itemId", ""),
+            "spu名称": item_info.get("title", ""),
+            "sku编码": sku_id,
+            "sku名称": sku_data.get("skuName", ""),
+            "sku销售状态": sale_status,
+            "规格": sku_data.get("skuName", ""),
+            "参数信息": json.dumps(basePropsDict, ensure_ascii=False),
+            "总评论数量": total_comments,
+            "销量": item_info.get("vagueSellCount", ""),
+            "标价": sku_data.get("price", {}).get("priceText", ""),
+            "到手价": sku_data.get("subPrice", {}).get("priceText", ""),
+            "优惠信息": 优惠信息_str,
+            "发货地区": delivery_info.get("deliveryFromAddr", ""),
+            "商品主图": ""
+        }
+
+        # 保存json
+        # filename = f"product_info/{product_id}.json"
+        # os.makedirs("product_info", exist_ok=True)  # 确保目录存在
+        # with open(filename, "w", encoding="utf-8") as f:
+        #     json.dump(product_info, f, ensure_ascii=False, indent=4)
+        # print(f"商品信息已保存: {filename}")
+
+        records.append(record)
+
+    # 5. 利用 pandas 导出为 Excel 文件
+    df = pd.DataFrame(records)
+    output_file = "productInfo.xlsx"
+
+    # 判断文件是否存在
+    if os.path.exists(output_file):
+        # 如果存在，则读取现有数据
+        existing_df = pd.read_excel(output_file)
+        # 合并新数据与原有数据
+        final_df = pd.concat([existing_df, df], ignore_index=True)
+    else:
+        final_df = df
+
+    # 保存合并后的数据
+    final_df.to_excel(output_file, index=False)
+    print(f"Excel 已保存到 {output_file}")
+    
 def login_process():
     # 打开淘宝登录页面
     driver.get("https://login.taobao.com/member/login.jhtml")
 
     # 等待扫码登录成功后，用户名元素出现
     try:
-        WebDriverWait(driver, 60).until(
+        WebDriverWait(driver, 3600*24).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "[class^='myAccountName']"))
         )
         print("用户已登录，继续执行后续操作")
     except TimeoutException:
         print("等待登录超时，请手动完成登录")
 
-def extract_product_info(driver, product_link):
+def play_alert_sound():
     """
-    进入商品详情页后，等待页面加载一段时间，再通过性能日志查找调用 mtop.taobao.pcdetail.data.get 的请求，
-    解析返回的 JSONP 数据，并返回解析后的结果。
+    持续播放报警声音，直到 stop_alert 变为 True
     """
+    global stop_alert
+    wave_obj = sa.WaveObject.from_wave_file("./alert.wav")
+
+    while not stop_alert:  # 只要 stop_alert 还是 False，就继续播放
+        play_handle = wave_obj.play()
+        play_handle.wait_done()  # 等待当前播放完成
+        time.sleep(0.5)  # 控制播放间隔，避免高 CPU 占用
+
+# 返回值
+# 0 - 需要人工处理的错误
+# 1 - 有错误但重试
+# 2 - 无错误
+def extract_product_and_rate_info(driver, product_link):
+    """
+    进入商品详情页后，等待页面加载一段时间，
+    一次性从性能日志中捕获：
+      1. mtop.taobao.pcdetail.data.get 的返回数据，存入 product_info["data"]
+      2. mtop.taobao.rate.detaillist.get 的返回数据，存入 rate_info["data"]
+    最后返回 product_info, rate_info 以及成功标记。
+    """
+    global stop_alert
     product_info = {
         "product_link": product_link,
         "data": None  # 最终保存接口返回的数据
     }
+    rate_info = {
+        "data": None   # 评论接口返回的数据（取其中 data 字段）
+    }
 
     # 等待页面加载并触发接口调用（根据实际情况调整等待时间）
-    time.sleep(5)
+    time.sleep(random.randint(4, 6)) 
 
     logs = driver.get_log("performance")
     for entry in logs:
         try:
             message = json.loads(entry["message"])["message"]
-            # 筛选目标请求（可以根据 URL 中的特定关键词判断）
-            if "Network.responseReceived" in message["method"]:
-                response_url = message["params"]["response"]["url"]
-                if "mtop.taobao.pcdetail.data.get" in response_url:
-                    request_id = message["params"]["requestId"]
-                    response = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": request_id})
-                    response_text = response.get("body", "")
-                    # 如果接口返回的是 JSONP，需要去掉回调包装
-                    pattern = r"^[^(]+\((.*)\)$"
-                    match = re.search(pattern, response_text)
-                    if match:
-                        json_str = match.group(1)
-                    else:
-                        json_str = response_text
-                    data = json.loads(json_str)
-                    product_info["data"] = data
-                    print("解析后的数据：", data)
-                    break  # 找到数据后退出循环
+            if "Network.responseReceived" not in message["method"]:
+                continue
+            
+            response_url = message["params"]["response"]["url"]
+            request_id = message["params"]["requestId"]
+            
+            # 若为商品详情接口
+            if "mtop.taobao.pcdetail.data.get" in response_url:
+                response = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": request_id})
+                response_text = response.get("body", "")
+                # 去除 JSONP 回调包装
+                pattern = r"^[^(]+\((.*)\)$"
+                match = re.search(pattern, response_text)
+                if match:
+                    json_str = match.group(1)
+                else:
+                    json_str = response_text
+                data = json.loads(json_str)
+                product_info["data"] = data
+                
+                # 错误处理
+                if isinstance(data, dict) and 'ret' in data:
+                    if any('FAIL_SYS_TOKEN_EMPTY' in s for s in data['ret']):
+                        print("检测到 FAIL_SYS_TOKEN_EMPTY 错误")
+                        return product_info, rate_info, 1
+                    if any('FAIL_SYS_USER_VALIDATE' in s for s in data['ret']):
+                        print("检测到 FAIL_SYS_USER_VALIDATE 错误")
+                        # 先重置 stop_alert 为 False
+                        stop_alert = False
+
+                        # 启动一个新线程来播放声音，使主线程可以继续运行
+                        alert_thread = threading.Thread(target=play_alert_sound, daemon=True)
+                        alert_thread.start()
+                        return product_info, rate_info, 0
+                print("解析后的商品详情数据：", data)
+            
+            # 若为评论数据接口
+            elif "mtop.taobao.rate.detaillist.get" in response_url:
+                response = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": request_id})
+                response_text = response.get("body", "")
+                pattern = r"^[^(]+\((.*)\)$"
+                match = re.search(pattern, response_text)
+                if match:
+                    json_str = match.group(1)
+                else:
+                    json_str = response_text
+                data = json.loads(json_str)
+                # 评论接口返回数据格式一般为：{"api": ..., "data": { ... }, ...}
+                # 取出 data.data 中的内容（如果需要调整，请根据实际数据结构修改）
+                rate_info["data"] = data.get("data", {})
+                print("解析后的评论数据：", rate_info["data"])
         except Exception as e:
             print(f"处理网络日志时出错: {e}")
-    return product_info
-    
-def search_and_scrape():
-    # 加载已爬取的商品ID
-    scraped_ids = load_scraped_product_ids()
-
-    # 转化搜索内容为URL可识别格式
-    search_term = "鞋"
-    search_term_encoded = urllib.parse.quote(search_term)
-
-    # 初始搜索页面
-    page_number = 1
-    while True:
-        # 打开搜索页面
-        search_url = f"https://s.taobao.com/search?commend=all&ie=utf8&initiative_id=tbindexz_20170306&page={page_number}&q={search_term_encoded}&search_type=item&sourceId=tb.index&spm=a21bo.tmall%2Fa.201867-main.d1_2_1.6614c3d5WmI8Dx&ssid=s5-e&tab=mall"
-        driver.get(search_url)
-
-        # 等待商品列表出现
-        content_items_wrapper = driver.find_elements(By.ID, "content_items_wrapper")
-        if content_items_wrapper:
-            print(f"第 {page_number} 页元素已出现")
-        else:
-            print(f"第 {page_number} 页元素未出现")
-            break  # 如果没有元素，则结束循环
-
-        # 获取商品列表元素
-        product_list = driver.find_elements(By.CSS_SELECTOR, ".tbpc-col.search-content-col")
-
-        # 提取商品链接并保存
-        product_links = []
-        for product in product_list:
-            product_link = product.find_element(By.CSS_SELECTOR, "a").get_attribute("href")
-            product_links.append(product_link)
-
-        while product_links:
-            # 随机选择一个商品链接
-            product_link = random.choice(product_links)
-            # 提取商品ID
-            product_id = product_link.split("id=")[-1].split("&")[0]
-
-            # 如果商品ID已经爬取过，则跳过
-            if product_id in scraped_ids:
-                print(f"商品 {product_id} 已经爬取过，跳过该商品。")
-                # 删除已爬取的商品链接
-                product_links.remove(product_link)
-                continue
-
-            # 跳转到商品详情页
-            driver.get(product_link)
-
-            # 等待商品详情加载
-            time.sleep(random.randint(3, 5))  # 等待3到5秒，模拟人类浏览的速度
-
-            # 提取商品详情信息
-            product_info = extract_product_info(driver, product_link)
-
-            # 保存商品信息
-            save_product_info(product_info, product_id)
-
-            # 更新已爬取商品ID列表
-            update_scraped_product_ids(product_id)
-
-            # 删除已爬取的商品链接
-            product_links.remove(product_link)
-
-        # 进入下一页
-        page_number += 1
-        time.sleep(random.randint(3, 5))  # 等待3到5秒后跳转到下一页
             
+    return product_info, rate_info, 2
+
+def process_product_links():
+    global stop_alert
+    with open("id_list.csv", "r", encoding="utf-8") as csvfile:
+        lines = list(csv.reader(csvfile))  # 读取所有行
+        row_index = 0  # 当前处理的行索引
+
+        while row_index < len(lines):
+            try:
+                row = lines[row_index]
+                product_link = row[0]
+                if product_link == '':
+                    break
+
+                is_scraped = int(row[1])
+
+                # 提取商品ID
+                product_id = product_link.split("id=")[-1].split("&")[0]
+
+                # 如果该链接已经爬取过，则跳过
+                if is_scraped == 1:
+                    print(f"商品 {product_id} 已经爬取过，跳过该商品。")
+                    row_index += 1
+                    continue
+                
+                # 跳转到商品详情页
+                driver.get(product_link)
+
+                # 提取商品详情信息
+                product_info, rate_info, status = extract_product_and_rate_info(driver, product_link)
+                if status == 0: # 0是需要人工处理的错误
+                    print("提取信息失败，请处理页面验证后按任意键继续...")
+                    input()  # 等待用户输入
+                    stop_alert = True
+                    time.sleep(0.5)  # 等待线程安全退出
+                    continue  # 重新处理当前链接
+                elif status == 1: # 1是有错误但重试
+                    print("提取信息失败，正在重试...")
+                    continue  # 重新处理当前链接
+
+                # 保存商品信息
+                save_sku_info(product_info, rate_info)
+
+                # 更新 CSV 文件中的标志位
+                lines[row_index][1] = 1  # 更新当前行的标志位
+                with open("id_list.csv", "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerows(lines)  # 写入所有行
+
+                print(f"商品 {product_id} 爬取成功")
+
+            except Exception as e:
+                print(f"商品 {product_id} 发生错误，跳过: {e}")
+
+            row_index += 1  # 处理下一行
 
 # 执行登录和抓取操作
 login_process()
-search_and_scrape()
+process_product_links()
