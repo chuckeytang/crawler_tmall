@@ -1,3 +1,4 @@
+import traceback
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -21,6 +22,9 @@ import datetime
 import pandas as pd
 import threading
 
+from api_request import send_error_to_server
+from db_manager import DBManager, db_manager  # 使用全局实例
+
 # 设置 Chrome 启动参数
 chrome_options = Options()
 # 禁用图片加载
@@ -36,6 +40,7 @@ driver = uc.Chrome(use_subprocess=True, version_main=128, options=chrome_options
 driver.implicitly_wait(10)
 
 stop_alert = False
+last_save_time = None  # 用于记录上次调用时间
 
 # 模拟键盘向下箭头键滚动页面
 def keyboard_scroll(driver, num_of_scrolls, pause_time):
@@ -51,7 +56,129 @@ def mouse_wheel_scroll(driver, num_of_scrolls, pause_time):
         time.sleep(random.random()*(pause_time/2)+pause_time/2)
 
 def save_sku_info(product_info, rate_info):
+    global last_save_time
+    global stop_alert
     data = product_info.get("data", {}).get("data", {})
+    skuBase = data.get("skuBase", {})
+
+    if not skuBase:
+        print("skuBase 为空，商品爬取异常，需要人工处理。")
+        return 0
+
+    skuInfoDict = data.get("skuCore", {}).get("sku2info", {})
+    sku_skus = skuBase.get("skus", [])
+    sku_props = skuBase.get("props", [])
+    
+    total_comments = 0
+    if rate_info.get("data", {}):
+        total_comments = rate_info.get("data", {}).get("feedAllCountFuzzy", "")
+        
+    seller = data.get("seller", {})
+    item_info = data.get("item", {})
+    delivery_info = data.get("componentsVO", {}).get("deliveryVO", {})
+    
+    # 记录当前时间，计算时间间隔
+    current_time = time.time()
+    
+    if last_save_time is not None:
+        interval = current_time - last_save_time
+        if interval < 6:  # 如果时间间隔小于 6 秒，认为有问题
+            print(f"警告：两次保存时间间隔过短（{interval}秒），可能出现未检测到的错误。")
+            
+            # 启动报警线程
+            alert_thread = threading.Thread(target=play_alert_sound, daemon=True)
+            alert_thread.start()
+
+            # 保存日志
+            logging.error(f"两次保存时间间隔过短（{interval}秒），可能出现未检测到的错误。产品ID: {item_info.get('itemId', '')}, SKU ID: {sku_id}")
+
+            # 等待用户确认继续
+            print("提取信息失败，请处理页面验证后按任意键继续...")
+            input()  # 等待用户输入
+            stop_alert = True
+            time.sleep(0.5)  # 等待线程安全退出
+            return 0  # 终止当前操作
+
+    # 更新 last_save_time 为当前时间
+    last_save_time = current_time
+    # 遍历 SKU 数据并保存到 SQLite
+    for sku in sku_skus:
+        sku_id = sku.get("skuId")
+        sku_name = ""
+        propPath = sku.get("propPath", "")
+        
+        first_group = propPath.split(";")[0]
+        parts = first_group.split(":")
+        vid = parts[1] if len(parts) >= 2 else ""
+        
+        for prop in sku_props:
+            for value in prop.get("values", []):
+                if value.get("vid") == vid:
+                    sku_name = value.get("name", "")
+                    break
+            if sku_name:
+                break
+
+        price = sku.get("price", {}).get("priceText", "")
+        quantity = sku.get("quantity", 0)
+        sale_status = "在售" if int(quantity) != 0 else "无货"
+        
+        # 参数信息，多个参数拼接
+        basePropsDict = {}
+        extension_infos = data.get("componentsVO", {}).get("extensionInfoVO", {}).get("infos", [])
+        for info in extension_infos:
+            if info.get("type") == "BASE_PROPS":
+                for item in info.get("items", []):
+                    title = item.get("title", "")
+                    texts = item.get("text", [])
+                    if isinstance(texts, list):
+                        basePropsDict[title] = " ".join(texts)
+                    else:
+                        basePropsDict[title] = texts
+
+        parameter_info = json.dumps(basePropsDict, ensure_ascii=False)
+        
+        # 将信息保存到 SQLite
+        db_manager.save_product_info(
+            collection_date=datetime.datetime.now().strftime("%Y-%m-%d"),
+            check_date="",
+            platform="天猫",
+            shop_id=seller.get("shopId", ""),
+            shop_name=seller.get("sellerNick", ""),
+            spu_url=f"https://item.taobao.com/item.htm?id={item_info.get('itemId', '')}",
+            product_url=f"https://detail.tmall.com/item.htm?id={item_info.get('itemId', '')}&skuId={sku_id}",
+            category_level_1="留待完善",
+            category_level_2="留待完善",
+            category_level_3="留待完善",
+            brand_name=basePropsDict.get("品牌", ""),
+            spu_code=item_info.get("itemId", ""),
+            spu_name=item_info.get("title", ""),
+            sku_code=sku_id,
+            sku_name=sku_name,
+            sku_sale_status=sale_status,
+            specification=sku_name,
+            parameter_info=parameter_info,
+            total_comments=total_comments,
+            sales=item_info.get("vagueSellCount", ""),
+            marked_price=sku.get("price", {}).get("priceText", ""),
+            final_price=sku.get("subPrice", {}).get("priceText", ""),
+            discount_info="优惠信息待抓取",
+            delivery_area=delivery_info.get("deliveryFromAddr", ""),
+            product_image=""
+        )
+
+    print("商品信息已保存到 SQLite")
+    return 1
+
+def save_sku_info_toexcel(product_info, rate_info):
+    data = product_info.get("data", {}).get("data", {})
+
+    # 判断 skuBase 是否为空或为 None
+    skuBase = data.get("skuBase", {})
+    if not skuBase:
+        # 返回状态 0 表示爬取失败，可能需要人工处理
+        print("skuBase 为空，商品爬取异常，需要人工处理。")
+        return 0
 
     # 1. 从 extensionInfoVO.infos 中提取 BASE_PROPS 和 DAILY_COUPON 信息
     basePropsDict = {}
@@ -82,8 +209,11 @@ def save_sku_info(product_info, rate_info):
     sku_skus = skuBase.get("skus", [])
     sku_props = skuBase.get("props", [])
     
+    total_comments = 0
     # 从评论数据中获取“总评论数量”（对所有 sku 均相同）
-    total_comments = rate_info.get("data", {}).get("feedAllCountFuzzy", "")
+    if (rate_info.get("data", {})):
+        total_comments = rate_info.get("data", {}).get("feedAllCountFuzzy", "")
+        
     for sku in sku_skus:
         sku_id = sku.get("skuId")
         propPath = sku.get("propPath", "")
@@ -183,6 +313,7 @@ def save_sku_info(product_info, rate_info):
     # 保存合并后的数据
     final_df.to_excel(output_file, index=False)
     print(f"Excel 已保存到 {output_file}")
+    return 1
     
 def login_process():
     # 打开淘宝登录页面
@@ -239,7 +370,9 @@ def extract_product_and_rate_info(driver, product_link):
             message = json.loads(entry["message"])["message"]
             if "Network.responseReceived" not in message["method"]:
                 continue
-            
+            if "Network.responseReceivedExtraInfo" in message["method"]:
+                continue
+
             response_url = message["params"]["response"]["url"]
             request_id = message["params"]["requestId"]
             
@@ -266,10 +399,6 @@ def extract_product_and_rate_info(driver, product_link):
                         print("检测到 FAIL_SYS_USER_VALIDATE 错误")
                         # 先重置 stop_alert 为 False
                         stop_alert = False
-
-                        # 启动一个新线程来播放声音，使主线程可以继续运行
-                        alert_thread = threading.Thread(target=play_alert_sound, daemon=True)
-                        alert_thread.start()
                         return product_info, rate_info, 0
                 print("解析后的商品详情数据：", data)
             
@@ -295,59 +424,78 @@ def extract_product_and_rate_info(driver, product_link):
 
 def process_product_links():
     global stop_alert
-    with open("id_list.csv", "r", encoding="utf-8") as csvfile:
-        lines = list(csv.reader(csvfile))  # 读取所有行
-        row_index = 0  # 当前处理的行索引
+    
+    local_db_manager = DBManager(db_manager.db_path)
+    conn = local_db_manager.conn
+    cursor = conn.cursor()
+    
+    # 查询尚未爬取的记录（crawled = 0）
+    cursor.execute("SELECT id, urlid, url, import_time, crawled, uploaded, has_fault FROM id_list WHERE crawled = 0")
+    rows = cursor.fetchall()
+    
+    for row in rows:
+        row_id = row[0]
+        product_link = row[2]
+        if not product_link:
+            continue
+        
+        # 提取商品ID
+        product_id = product_link.split("id=")[-1].split("&")[0]
+        try:
+            # 跳转到商品详情页
+            driver.get(product_link)
+            
+            # 提取商品详情信息
+            product_info, rate_info, status = extract_product_and_rate_info(driver, product_link)
+            if status == 0:  # 需要人工处理的错误
+                alert_thread = threading.Thread(target=play_alert_sound, daemon=True)
+                alert_thread.start()
+                print("提取信息失败，请处理页面验证后按任意键继续...")
+                input()  # 等待用户输入
+                stop_alert = True
+                time.sleep(0.5)
+                continue  # 重新处理当前链接
+            elif status == 1:  # 有错误但重试
+                print("提取信息失败，正在重试...")
+                continue  # 重新处理当前链接
 
-        while row_index < len(lines):
-            try:
-                row = lines[row_index]
-                product_link = row[0]
-                if product_link == '':
-                    break
+            # 保存商品信息到 SQLite（save_sku_info 返回 1 成功，0 表示错误）
+            status2 = save_sku_info(product_info, rate_info)
+            if status2 == 0:
+                alert_thread = threading.Thread(target=play_alert_sound, daemon=True)
+                alert_thread.start()
+                print("提取信息失败，请处理登录异常后按任意键继续...")
+                input()  # 等待用户输入
+                stop_alert = True
+                time.sleep(0.5)
+                continue  # 重新处理当前链接
+            
+            # 更新数据库，标记该记录已爬取
+            cursor.execute("UPDATE id_list SET crawled = 1 WHERE id = ?", (row_id,))
+            conn.commit()
+            
+            print(f"商品 {product_id} 爬取成功")
 
-                is_scraped = int(row[1])
+        except Exception as e:
+            # 处理异常并发送到服务器
+            error_message = str(e)
+            error_traceback = traceback.format_exc()
 
-                # 提取商品ID
-                product_id = product_link.split("id=")[-1].split("&")[0]
+            # 将异常信息发送到 Flask 服务器
+            send_error_to_server(error_message, error_traceback)
 
-                # 如果该链接已经爬取过，则跳过
-                if is_scraped == 1:
-                    print(f"商品 {product_id} 已经爬取过，跳过该商品。")
-                    row_index += 1
-                    continue
-                
-                # 跳转到商品详情页
-                driver.get(product_link)
+            # 处理断网错误
+            if "net::ERR_INTERNET_DISCONNECTED" in error_message:
+                # 启动一个新线程来播放声音，并让用户处理断网情况
+                alert_thread = threading.Thread(target=play_alert_sound, daemon=True)
+                alert_thread.start()
+                print(f"商品 {product_id} 发生断网错误，请检查网络连接后按任意键继续...")
+                input()  # 等待用户输入
+                stop_alert = True
+                time.sleep(0.5)  # 等待线程安全退出
+                continue  # 重新处理当前链接
 
-                # 提取商品详情信息
-                product_info, rate_info, status = extract_product_and_rate_info(driver, product_link)
-                if status == 0: # 0是需要人工处理的错误
-                    print("提取信息失败，请处理页面验证后按任意键继续...")
-                    input()  # 等待用户输入
-                    stop_alert = True
-                    time.sleep(0.5)  # 等待线程安全退出
-                    continue  # 重新处理当前链接
-                elif status == 1: # 1是有错误但重试
-                    print("提取信息失败，正在重试...")
-                    continue  # 重新处理当前链接
+            # 处理其他异常
+            print(f"商品 {product_id} 发生错误，跳过: {e}")
 
-                # 保存商品信息
-                save_sku_info(product_info, rate_info)
-
-                # 更新 CSV 文件中的标志位
-                lines[row_index][1] = 1  # 更新当前行的标志位
-                with open("id_list.csv", "w", newline="", encoding="utf-8") as f:
-                    writer = csv.writer(f)
-                    writer.writerows(lines)  # 写入所有行
-
-                print(f"商品 {product_id} 爬取成功")
-
-            except Exception as e:
-                print(f"商品 {product_id} 发生错误，跳过: {e}")
-
-            row_index += 1  # 处理下一行
-
-# 执行登录和抓取操作
-login_process()
-process_product_links()
+        row_index += 1  # 处理下一行
