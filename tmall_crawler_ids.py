@@ -17,6 +17,8 @@ import os
 import re
 import csv
 
+from driver_manager import DriverManager
+
 # 设置 Chrome 启动参数
 chrome_options = Options()
 chrome_options.add_argument("--blink-settings=imagesEnabled=false")
@@ -28,13 +30,15 @@ driver = uc.Chrome(use_subprocess=True, version_main=128, options=chrome_options
 driver.implicitly_wait(10)
 
 # 模拟键盘向下箭头键滚动页面
-def keyboard_scroll(driver, num_of_scrolls, pause_time):
+def keyboard_scroll(num_of_scrolls, pause_time):
+    driver = DriverManager.get_driver()
     for _ in range(num_of_scrolls):
         ActionChains(driver).send_keys(Keys.ARROW_DOWN).perform()
         time.sleep(random.random()*(pause_time/2)+pause_time/2)
 
 # 模拟鼠标滚轮滚动
-def mouse_wheel_scroll(driver, num_of_scrolls, pause_time):
+def mouse_wheel_scroll(num_of_scrolls, pause_time):
+    driver = DriverManager.get_driver()
     body = driver.find_element(By.CSS_SELECTOR, 'body')
     for _ in range(num_of_scrolls):
         ActionChains(driver).move_to_element(body).click().send_keys(Keys.PAGE_DOWN).perform()

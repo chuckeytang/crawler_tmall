@@ -3,6 +3,7 @@ import sys
 import os
 import datetime
 import threading
+import time
 
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QLineEdit, QFileDialog, QCheckBox,
@@ -13,6 +14,7 @@ from tmall_crawler import login_process, process_product_links
 
 # 创建全局数据库管理实例
 from db_manager import db_manager  # 使用全局实例
+from driver_manager import DriverManager
 
 class ImportOperationPage(QWidget):
     def __init__(self, parent=None):
@@ -40,8 +42,8 @@ class ImportOperationPage(QWidget):
         self.msg_label.setStyleSheet("color: red;")
         layout.addWidget(self.msg_label)
         
-        # ---------------- 爬取/上传操作部分 ----------------
-        op_title = QLabel("爬取/上传操作")
+        # ---------------- 提取/上传操作部分 ----------------
+        op_title = QLabel("提取/上传操作")
         op_title.setStyleSheet("font-size: 18pt;")
         layout.addWidget(op_title)
         
@@ -56,23 +58,32 @@ class ImportOperationPage(QWidget):
         layout.addLayout(filter_layout)
         
         # ---------------- 数据表格 ----------------
-        self.table = QTableWidget(0, 8)
-        self.table.setHorizontalHeaderLabels(["编号", "商品id", "上皮url", "导入时间", "已爬取", "已上传", "故障"])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["编号", "商品id", "商品url", "导入时间", "已提取", "已上传", "故障"])
         self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table)
+
+        self.table.setColumnWidth(0, 50)   # 编号
+        self.table.setColumnWidth(1, 150)  # 商品id
+        self.table.setColumnWidth(2, 600)  # 商品url（较宽）
+        self.table.setColumnWidth(3, 150)  # 导入时间
+        self.table.setColumnWidth(4, 80)   # 已提取
+        self.table.setColumnWidth(5, 80)   # 已上传
+        self.table.setColumnWidth(6, 80)   # 故障
+
         self.refresh_table()
         
         # ---------------- 复选框区域 ----------------
         checkbox_layout = QHBoxLayout()
-        self.ignore_faults_checkbox = QCheckBox("忽略故障")
+        self.ignore_faults_checkbox = QCheckBox("重新提取故障项")
         checkbox_layout.addWidget(self.ignore_faults_checkbox)
-        self.recrawl_checkbox = QCheckBox("重新爬取")
+        self.recrawl_checkbox = QCheckBox("重新提取全部项")
         checkbox_layout.addWidget(self.recrawl_checkbox)
         layout.addLayout(checkbox_layout)
         
         # ---------------- 操作按钮区域 ----------------
         btn_layout = QHBoxLayout()
-        crawl_button = QPushButton("爬取")
+        crawl_button = QPushButton("提取")
         crawl_button.setObjectName("crawlButton")
         crawl_button.clicked.connect(self.crawl)
         btn_layout.addWidget(crawl_button)
@@ -119,11 +130,11 @@ class ImportOperationPage(QWidget):
             self.table.setItem(row_idx, 1, QTableWidgetItem(str(row[1])))
             self.table.setItem(row_idx, 2, QTableWidgetItem(str(row[2])))
             self.table.setItem(row_idx, 3, QTableWidgetItem(str(row[3])))
-            crawled = "是" if row[4] == 1 else "否"
+            crawled = "已提取" if row[4] == 1 else "否"
             self.table.setItem(row_idx, 4, QTableWidgetItem(crawled))
-            uploaded = "是" if row[5] == 1 else "否"
+            uploaded = "已上传" if row[5] == 1 else "否"
             self.table.setItem(row_idx, 5, QTableWidgetItem(uploaded))
-            fault = "有故障" if row[6] == 1 else "无故障"
+            fault = "有故障" if row[6] == 1 else "无"
             self.table.setItem(row_idx, 6, QTableWidgetItem(fault))
             # 操作列暂时为空
             self.table.setItem(row_idx, 7, QTableWidgetItem(""))
@@ -144,24 +155,41 @@ class ImportOperationPage(QWidget):
         if crawl_btn:
             crawl_btn.setEnabled(False)
         
+        date_str = self.date_line.text().strip()
         ignore_faults = self.ignore_faults_checkbox.isChecked()
         recrawl = self.recrawl_checkbox.isChecked()
-        reply = QMessageBox.question(self, "确认", f"开始爬取？\n忽略故障：{ignore_faults}\n重新爬取：{recrawl}",
+        reply = QMessageBox.question(self, "确认", f"开始提取？\n重新提取故障项：{ignore_faults}\n重新提取全部项：{recrawl}",
                                      QMessageBox.Yes | QMessageBox.No)
         if reply != QMessageBox.Yes:
+            crawl_btn.setEnabled(True)
             return
         
         def crawl_thread():
             try:
+                driver = DriverManager.get_driver()  # 获取 driver
                 login_process()
-                process_product_links()
-                QMessageBox.information(self, "完成", "爬取操作完成")
-                self.refresh_table()
+                process_product_links(date_str)
+                QMessageBox.information(self, "完成", "提取操作完成")
             except Exception as e:
-                QMessageBox.critical(self, "爬取错误", str(e))
-        
+                print(f"提取时出错: {e}")
+                if "chrome not reachable" in str(e):
+                    QMessageBox.warning(self, "警告", "浏览器已关闭")
+            finally:
+                crawl_btn.setEnabled(True)
         t = threading.Thread(target=crawl_thread)
         t.start()
+        
+        def monitor_browser():
+            time.sleep(15)
+            while True:
+                time.sleep(2)
+                if not DriverManager.is_driver_alive():
+                    print("浏览器已关闭，启用提取按钮")
+                    crawl_btn.setEnabled(True)
+                    break
+        monitor_thread = threading.Thread(target=monitor_browser, daemon=True)
+        monitor_thread.start()
+                
     
     def upload(self):
         QMessageBox.information(self, "上传", "开始上传操作")

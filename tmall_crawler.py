@@ -8,6 +8,8 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import NoAlertPresentException
+from driver_manager import DriverManager 
+
 import logging
 
 import time
@@ -25,44 +27,35 @@ import threading
 from api_request import send_error_to_server
 from db_manager import DBManager, db_manager  # 使用全局实例
 
-# 设置 Chrome 启动参数
-chrome_options = Options()
-# 禁用图片加载
-# chrome_options.add_argument("--blink-settings=imagesEnabled=false")
-# # 禁用视频和插件
-# chrome_options.add_argument("--disable-web-security")
-# chrome_options.add_argument("--disable-features=IsolateOrigins,site-per-process")
-
-# 启用性能日志
-chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
-
-driver = uc.Chrome(use_subprocess=True, version_main=128, options=chrome_options)
-driver.implicitly_wait(10)
-
 stop_alert = False
 last_save_time = None  # 用于记录上次调用时间
 
 # 模拟键盘向下箭头键滚动页面
-def keyboard_scroll(driver, num_of_scrolls, pause_time):
+def keyboard_scroll(num_of_scrolls, pause_time):
+    driver = DriverManager.get_driver()
     for _ in range(num_of_scrolls):
         ActionChains(driver).send_keys(Keys.ARROW_DOWN).perform()
         time.sleep(random.random()*(pause_time/2)+pause_time/2)
 
 # 模拟鼠标滚轮滚动
-def mouse_wheel_scroll(driver, num_of_scrolls, pause_time):
+def mouse_wheel_scroll(num_of_scrolls, pause_time):
+    driver = DriverManager.get_driver()
     body = driver.find_element_by_css_selector('body')
     for _ in range(num_of_scrolls):
         ActionChains(driver).move_to_element(body).click().send_keys(Keys.PAGE_DOWN).perform()
         time.sleep(random.random()*(pause_time/2)+pause_time/2)
 
-def save_sku_info(product_info, rate_info):
+def save_sku_info(local_db_manager, product_info, rate_info):
     global last_save_time
     global stop_alert
+    if product_info.get("data", {}) == None:
+        return 2
+    
     data = product_info.get("data", {}).get("data", {})
     skuBase = data.get("skuBase", {})
 
     if not skuBase:
-        print("skuBase 为空，商品爬取异常，需要人工处理。")
+        print("skuBase 为空，商品提取异常，需要人工处理。")
         return 0
 
     skuInfoDict = data.get("skuCore", {}).get("sku2info", {})
@@ -139,7 +132,7 @@ def save_sku_info(product_info, rate_info):
         parameter_info = json.dumps(basePropsDict, ensure_ascii=False)
         
         # 将信息保存到 SQLite
-        db_manager.save_product_info(
+        local_db_manager.save_product_info(
             collection_date=datetime.datetime.now().strftime("%Y-%m-%d"),
             check_date="",
             platform="天猫",
@@ -168,7 +161,7 @@ def save_sku_info(product_info, rate_info):
         )
 
     print("商品信息已保存到 SQLite")
-    return 1
+    return 2
 
 def save_sku_info_toexcel(product_info, rate_info):
     data = product_info.get("data", {}).get("data", {})
@@ -176,8 +169,8 @@ def save_sku_info_toexcel(product_info, rate_info):
     # 判断 skuBase 是否为空或为 None
     skuBase = data.get("skuBase", {})
     if not skuBase:
-        # 返回状态 0 表示爬取失败，可能需要人工处理
-        print("skuBase 为空，商品爬取异常，需要人工处理。")
+        # 返回状态 0 表示提取失败，可能需要人工处理
+        print("skuBase 为空，商品提取异常，需要人工处理。")
         return 0
 
     # 1. 从 extensionInfoVO.infos 中提取 BASE_PROPS 和 DAILY_COUPON 信息
@@ -317,6 +310,7 @@ def save_sku_info_toexcel(product_info, rate_info):
     
 def login_process():
     # 打开淘宝登录页面
+    driver = DriverManager.get_driver()
     driver.get("https://login.taobao.com/member/login.jhtml")
 
     # 等待扫码登录成功后，用户名元素出现
@@ -344,7 +338,7 @@ def play_alert_sound():
 # 0 - 需要人工处理的错误
 # 1 - 有错误但重试
 # 2 - 无错误
-def extract_product_and_rate_info(driver, product_link):
+def extract_product_and_rate_info(product_link):
     """
     进入商品详情页后，等待页面加载一段时间，
     一次性从性能日志中捕获：
@@ -362,8 +356,9 @@ def extract_product_and_rate_info(driver, product_link):
     }
 
     # 等待页面加载并触发接口调用（根据实际情况调整等待时间）
-    time.sleep(random.randint(4, 6)) 
+    time.sleep(random.randint(6, 8)) 
 
+    driver = DriverManager.get_driver()
     logs = driver.get_log("performance")
     for entry in logs:
         try:
@@ -422,31 +417,36 @@ def extract_product_and_rate_info(driver, product_link):
             
     return product_info, rate_info, 2
 
-def process_product_links():
+def process_product_links(date_filter=None):
+    """
+    处理数据库中的商品链接，仅提取筛选日期内的商品。
+    :param date_filter: 筛选日期，格式 'YYYY-MM-DD'，默认为 None（不过滤）
+    """
     global stop_alert
     
     local_db_manager = DBManager(db_manager.db_path)
     conn = local_db_manager.conn
     cursor = conn.cursor()
     
-    # 查询尚未爬取的记录（crawled = 0）
-    cursor.execute("SELECT id, urlid, url, import_time, crawled, uploaded, has_fault FROM id_list WHERE crawled = 0")
-    rows = cursor.fetchall()
-    
-    for row in rows:
+    rows = local_db_manager.query_ids_by_date(date_filter, only_not_crawled=True)
+    row_index = 0
+    while row_index < len(rows):
+        row = rows[row_index]
         row_id = row[0]
         product_link = row[2]
         if not product_link:
+            row_index += 1
             continue
         
         # 提取商品ID
         product_id = product_link.split("id=")[-1].split("&")[0]
         try:
             # 跳转到商品详情页
+            driver = DriverManager.get_driver()
             driver.get(product_link)
             
             # 提取商品详情信息
-            product_info, rate_info, status = extract_product_and_rate_info(driver, product_link)
+            product_info, rate_info, status = extract_product_and_rate_info(product_link)
             if status == 0:  # 需要人工处理的错误
                 alert_thread = threading.Thread(target=play_alert_sound, daemon=True)
                 alert_thread.start()
@@ -454,13 +454,13 @@ def process_product_links():
                 input()  # 等待用户输入
                 stop_alert = True
                 time.sleep(0.5)
-                continue  # 重新处理当前链接
+                continue  # **不增加 row_index，重新提取当前商品**
             elif status == 1:  # 有错误但重试
                 print("提取信息失败，正在重试...")
-                continue  # 重新处理当前链接
+                continue  # **不增加 row_index，重新提取当前商品**
 
             # 保存商品信息到 SQLite（save_sku_info 返回 1 成功，0 表示错误）
-            status2 = save_sku_info(product_info, rate_info)
+            status2 = save_sku_info(local_db_manager, product_info, rate_info)
             if status2 == 0:
                 alert_thread = threading.Thread(target=play_alert_sound, daemon=True)
                 alert_thread.start()
@@ -468,13 +468,13 @@ def process_product_links():
                 input()  # 等待用户输入
                 stop_alert = True
                 time.sleep(0.5)
-                continue  # 重新处理当前链接
+                continue # **不增加 row_index，重新提取当前商品**
             
-            # 更新数据库，标记该记录已爬取
+            # 更新数据库，标记该记录已提取
             cursor.execute("UPDATE id_list SET crawled = 1 WHERE id = ?", (row_id,))
             conn.commit()
             
-            print(f"商品 {product_id} 爬取成功")
+            print(f"商品 {product_id} 提取成功")
 
         except Exception as e:
             # 处理异常并发送到服务器
@@ -493,9 +493,9 @@ def process_product_links():
                 input()  # 等待用户输入
                 stop_alert = True
                 time.sleep(0.5)  # 等待线程安全退出
-                continue  # 重新处理当前链接
+                continue  # **不增加 row_index，重新提取当前商品**
 
             # 处理其他异常
             print(f"商品 {product_id} 发生错误，跳过: {e}")
-
+        
         row_index += 1  # 处理下一行

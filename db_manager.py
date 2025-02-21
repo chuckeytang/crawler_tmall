@@ -16,6 +16,7 @@ class DBManager:
         self.conn = sqlite3.connect(self.db_path)
         self._create_table_id_list()
         self._create_table_duplicate_ids()
+        self._create_table_product_info()
 
     def _create_table_id_list(self):
         cursor = self.conn.cursor()
@@ -97,20 +98,31 @@ class DBManager:
         count = cursor.fetchone()[0]
         return count > 0  # 如果返回值大于 0，则说明该 id 已经在同一天出现过
 
-    def query_ids_by_date(self, date_str, order_desc=False):
+    def query_ids_by_date(self, date_filter=None, order_desc=False, only_not_crawled=False):
         """
-        根据日期筛选记录，date_str 格式为 'YYYY-MM-DD'。
-        参数 order_desc 为 True 时按 import_time 倒序排列，默认为 False。
+        根据日期筛选 ID 列表，并支持只查询未提取的数据
+        :param date_filter: 筛选日期，格式 'YYYY-MM-DD'，默认为 None（不过滤）
+        :param order_desc: 是否按时间倒序排列，默认 False（升序）
+        :param only_not_crawled: 是否只查询未提取的数据
+        :return: 查询结果
         """
         cursor = self.conn.cursor()
-        like_pattern = f"{date_str}%"
-        order = "DESC" if order_desc else "ASC"
-        cursor.execute(f'''
-            SELECT id, urlid, url, import_time, crawled, uploaded, has_fault
-            FROM id_list
-            WHERE import_time LIKE ?
-            ORDER BY id {order}
-        ''', (like_pattern,))
+        query = "SELECT id, urlid, url, import_time, crawled, uploaded, has_fault FROM id_list WHERE 1=1"
+        params = []
+
+        if date_filter:
+            query += " AND import_time LIKE ?"
+            params.append(f"{date_filter}%")
+
+        if only_not_crawled:
+            query += " AND crawled = 0"
+
+        if order_desc:
+            query += " ORDER BY import_time DESC"
+        else:
+            query += " ORDER BY import_time ASC"
+
+        cursor.execute(query, tuple(params))
         return cursor.fetchall()
 
     def query_duplicate_ids(self):
@@ -180,7 +192,7 @@ class DBManager:
                 category_level_2, category_level_3, brand_name, spu_code, spu_name, sku_code, sku_name, sku_sale_status, 
                 specification, parameter_info, total_comments, sales, marked_price, final_price, discount_info, 
                 delivery_area, product_image, crawl_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (collection_date, check_date, platform, shop_id, shop_name, spu_url, product_url, category_level_1, 
               category_level_2, category_level_3, brand_name, spu_code, spu_name, sku_code, sku_name, sku_sale_status, 
               specification, parameter_info, total_comments, sales, marked_price, final_price, discount_info, 
