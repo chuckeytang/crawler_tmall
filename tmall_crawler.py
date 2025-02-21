@@ -24,7 +24,7 @@ import datetime
 import pandas as pd
 import threading
 
-from api_request import send_error_to_server
+from server_api import send_error_to_server, send_sku_info_to_server
 from db_manager import DBManager, db_manager  # 使用全局实例
 
 stop_alert = False
@@ -45,7 +45,7 @@ def mouse_wheel_scroll(num_of_scrolls, pause_time):
         ActionChains(driver).move_to_element(body).click().send_keys(Keys.PAGE_DOWN).perform()
         time.sleep(random.random()*(pause_time/2)+pause_time/2)
 
-def save_sku_info(local_db_manager, product_info, rate_info):
+def save_tmall_sku_info(local_db_manager, product_info, rate_info):
     global last_save_time
     global stop_alert
     if product_info.get("data", {}) == None:
@@ -94,6 +94,7 @@ def save_sku_info(local_db_manager, product_info, rate_info):
 
     # 更新 last_save_time 为当前时间
     last_save_time = current_time
+    records = []
     # 遍历 SKU 数据并保存到 SQLite
     for sku in sku_skus:
         sku_id = sku.get("skuId")
@@ -131,39 +132,49 @@ def save_sku_info(local_db_manager, product_info, rate_info):
 
         parameter_info = json.dumps(basePropsDict, ensure_ascii=False)
         
-        # 将信息保存到 SQLite
-        local_db_manager.save_product_info(
-            collection_date=datetime.datetime.now().strftime("%Y-%m-%d"),
-            check_date="",
-            platform="天猫",
-            shop_id=seller.get("shopId", ""),
-            shop_name=seller.get("sellerNick", ""),
-            spu_url=f"https://item.taobao.com/item.htm?id={item_info.get('itemId', '')}",
-            product_url=f"https://detail.tmall.com/item.htm?id={item_info.get('itemId', '')}&skuId={sku_id}",
-            category_level_1="留待完善",
-            category_level_2="留待完善",
-            category_level_3="留待完善",
-            brand_name=basePropsDict.get("品牌", ""),
-            spu_code=item_info.get("itemId", ""),
-            spu_name=item_info.get("title", ""),
-            sku_code=sku_id,
-            sku_name=sku_name,
-            sku_sale_status=sale_status,
-            specification=sku_name,
-            parameter_info=parameter_info,
-            total_comments=total_comments,
-            sales=item_info.get("vagueSellCount", ""),
-            marked_price=sku.get("price", {}).get("priceText", ""),
-            final_price=sku.get("subPrice", {}).get("priceText", ""),
-            discount_info="优惠信息待抓取",
-            delivery_area=delivery_info.get("deliveryFromAddr", ""),
-            product_image=""
-        )
+        # 构造采集记录
+        record = {
+            "collection_date": datetime.datetime.now().strftime("%Y-%m-%d"),
+            "check_date": "",
+            "platform": "天猫",
+            "shop_id": seller.get("shopId", ""),
+            "shop_name": seller.get("sellerNick", ""),
+            "spu_url": f"https://item.taobao.com/item.htm?id={item_info.get('itemId', '')}",
+            "product_url": f"https://detail.tmall.com/item.htm?id={item_info.get('itemId', '')}&skuId={sku_id}",
+            "category_level_1": "留待完善",
+            "category_level_2": "留待完善",
+            "category_level_3": "留待完善",
+            "brand_name": basePropsDict.get("品牌", ""),
+            "spu_code": item_info.get("itemId", ""),
+            "spu_name": item_info.get("title", ""),
+            "sku_code": sku_id,
+            "sku_name": sku_name,
+            "sku_sale_status": sale_status,
+            "specification": sku_name,
+            "parameter_info": parameter_info,
+            "total_comments": total_comments,
+            "sales": item_info.get("vagueSellCount", ""),
+            "marked_price": sku.get("price", {}).get("priceText", ""),
+            "final_price": sku.get("subPrice", {}).get("priceText", ""),
+            "discount_info": "优惠信息待抓取",
+            "delivery_area": delivery_info.get("deliveryFromAddr", ""),
+            "product_image": "",
+            "crawl_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
 
-    print("商品信息已保存到 SQLite")
+        # 添加到记录列表
+        records.append(record)
+
+        # 保存到本地数据库
+        local_db_manager.save_product_info(**record)
+
+    # **批量发送到服务器**
+    send_sku_info_to_server(records)
+    print("商品信息已 保存到SQLite 并 上传到服务器")
+    
     return 2
 
-def save_sku_info_toexcel(product_info, rate_info):
+def save_tmall_sku_info_toexcel(product_info, rate_info):
     data = product_info.get("data", {}).get("data", {})
 
     # 判断 skuBase 是否为空或为 None
@@ -289,6 +300,8 @@ def save_sku_info_toexcel(product_info, rate_info):
         # print(f"商品信息已保存: {filename}")
 
         records.append(record)
+        
+    send_sku_info_to_server(records)
 
     # 5. 利用 pandas 导出为 Excel 文件
     df = pd.DataFrame(records)
@@ -432,8 +445,8 @@ def process_product_links(date_filter=None):
     row_index = 0
     while row_index < len(rows):
         row = rows[row_index]
-        row_id = row[0]
-        product_link = row[2]
+        row_urlid = row[0]
+        product_link = row[1]
         if not product_link:
             row_index += 1
             continue
@@ -459,8 +472,8 @@ def process_product_links(date_filter=None):
                 print("提取信息失败，正在重试...")
                 continue  # **不增加 row_index，重新提取当前商品**
 
-            # 保存商品信息到 SQLite（save_sku_info 返回 1 成功，0 表示错误）
-            status2 = save_sku_info(local_db_manager, product_info, rate_info)
+            # 保存商品信息到 SQLite（save_tmall_sku_info 返回 1 成功，0 表示错误）
+            status2 = save_tmall_sku_info(local_db_manager, product_info, rate_info)
             if status2 == 0:
                 alert_thread = threading.Thread(target=play_alert_sound, daemon=True)
                 alert_thread.start()
@@ -471,7 +484,7 @@ def process_product_links(date_filter=None):
                 continue # **不增加 row_index，重新提取当前商品**
             
             # 更新数据库，标记该记录已提取
-            cursor.execute("UPDATE id_list SET crawled = 1 WHERE id = ?", (row_id,))
+            cursor.execute("UPDATE id_list SET crawled = 1 WHERE urlid = ?", (row_urlid,))
             conn.commit()
             
             print(f"商品 {product_id} 提取成功")

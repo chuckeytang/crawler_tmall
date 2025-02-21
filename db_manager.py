@@ -107,7 +107,7 @@ class DBManager:
         :return: 查询结果
         """
         cursor = self.conn.cursor()
-        query = "SELECT id, urlid, url, import_time, crawled, uploaded, has_fault FROM id_list WHERE 1=1"
+        query = "SELECT urlid, url, import_time, crawled, uploaded, has_fault FROM id_list WHERE 1=1"
         params = []
 
         if date_filter:
@@ -183,8 +183,7 @@ class DBManager:
     def save_product_info(self, collection_date, check_date, platform, shop_id, shop_name, spu_url, product_url, 
                            category_level_1, category_level_2, category_level_3, brand_name, spu_code, spu_name, 
                            sku_code, sku_name, sku_sale_status, specification, parameter_info, total_comments, sales, 
-                           marked_price, final_price, discount_info, delivery_area, product_image):
-        crawl_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                           marked_price, final_price, discount_info, delivery_area, product_image, crawl_time):
         cursor = self.conn.cursor()
         cursor.execute('''
             INSERT INTO product_info (

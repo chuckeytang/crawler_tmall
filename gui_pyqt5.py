@@ -58,18 +58,17 @@ class ImportOperationPage(QWidget):
         layout.addLayout(filter_layout)
         
         # ---------------- 数据表格 ----------------
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["编号", "商品id", "商品url", "导入时间", "已提取", "已上传", "故障"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["商品id", "商品url", "导入时间", "已提取", "已上传", "故障"])
         self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table)
 
-        self.table.setColumnWidth(0, 50)   # 编号
-        self.table.setColumnWidth(1, 150)  # 商品id
-        self.table.setColumnWidth(2, 600)  # 商品url（较宽）
-        self.table.setColumnWidth(3, 150)  # 导入时间
-        self.table.setColumnWidth(4, 80)   # 已提取
-        self.table.setColumnWidth(5, 80)   # 已上传
-        self.table.setColumnWidth(6, 80)   # 故障
+        self.table.setColumnWidth(0, 150)  # 商品id
+        self.table.setColumnWidth(1, 600)  # 商品url（较宽）
+        self.table.setColumnWidth(2, 150)  # 导入时间
+        self.table.setColumnWidth(3, 80)   # 已提取
+        self.table.setColumnWidth(4, 80)   # 已上传
+        self.table.setColumnWidth(5, 80)   # 故障
 
         self.refresh_table()
         
@@ -129,15 +128,14 @@ class ImportOperationPage(QWidget):
             self.table.setItem(row_idx, 0, QTableWidgetItem(str(row[0])))
             self.table.setItem(row_idx, 1, QTableWidgetItem(str(row[1])))
             self.table.setItem(row_idx, 2, QTableWidgetItem(str(row[2])))
-            self.table.setItem(row_idx, 3, QTableWidgetItem(str(row[3])))
-            crawled = "已提取" if row[4] == 1 else "否"
-            self.table.setItem(row_idx, 4, QTableWidgetItem(crawled))
-            uploaded = "已上传" if row[5] == 1 else "否"
-            self.table.setItem(row_idx, 5, QTableWidgetItem(uploaded))
-            fault = "有故障" if row[6] == 1 else "无"
-            self.table.setItem(row_idx, 6, QTableWidgetItem(fault))
+            crawled = "已提取" if row[3] == 1 else "否"
+            self.table.setItem(row_idx, 3, QTableWidgetItem(crawled))
+            uploaded = "已上传" if row[4] == 1 else "否"
+            self.table.setItem(row_idx, 4, QTableWidgetItem(uploaded))
+            fault = "有故障" if row[5] == 1 else "无"
+            self.table.setItem(row_idx, 5, QTableWidgetItem(fault))
             # 操作列暂时为空
-            self.table.setItem(row_idx, 7, QTableWidgetItem(""))
+            self.table.setItem(row_idx, 6, QTableWidgetItem(""))
     
     def clear_today_imports(self):
         today = datetime.date.today().isoformat()
@@ -145,7 +143,6 @@ class ImportOperationPage(QWidget):
             cursor = db_manager.conn.cursor()
             cursor.execute("DELETE FROM id_list WHERE import_time LIKE ?", (f"{today}%",))
             db_manager.conn.commit()
-            QMessageBox.information(self, "清空", "今天的导入记录已清空")
             self.refresh_table()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"清空记录失败：{e}")
@@ -158,11 +155,6 @@ class ImportOperationPage(QWidget):
         date_str = self.date_line.text().strip()
         ignore_faults = self.ignore_faults_checkbox.isChecked()
         recrawl = self.recrawl_checkbox.isChecked()
-        reply = QMessageBox.question(self, "确认", f"开始提取？\n重新提取故障项：{ignore_faults}\n重新提取全部项：{recrawl}",
-                                     QMessageBox.Yes | QMessageBox.No)
-        if reply != QMessageBox.Yes:
-            crawl_btn.setEnabled(True)
-            return
         
         def crawl_thread():
             try:
@@ -180,7 +172,7 @@ class ImportOperationPage(QWidget):
         t.start()
         
         def monitor_browser():
-            time.sleep(15)
+            time.sleep(30)
             while True:
                 time.sleep(2)
                 if not DriverManager.is_driver_alive():
