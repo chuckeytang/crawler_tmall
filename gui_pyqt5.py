@@ -36,15 +36,17 @@ from tmall_crawler import login_process, process_product_links
 from db_manager import db_manager  # 使用全局实例
 from driver_manager import DriverManager
 
-# 设置日志配置
-logging.basicConfig(
-    level=logging.DEBUG, 
-    format="%(asctime)s - %(levelname)s - %(message)s", 
-    handlers=[
-        logging.StreamHandler(sys.stdout),  # 输出到控制台
-        logging.FileHandler("tmall_crawler_debug.log")  # 输出到文件
-    ]
-)
+# 设置日志配置，确保配置早于应用启动
+def configure_logging():
+    logging.basicConfig(
+        level=logging.DEBUG, 
+        format="%(asctime)s - %(levelname)s - %(message)s", 
+        handlers=[
+            logging.StreamHandler(sys.stdout),  # 输出到控制台
+            logging.FileHandler("tmall_crawler_debug.log")  # 输出到文件
+        ]
+    )
+    logging.debug("✅ [INFO] 启动日志配置")
 
 # 检测操作系统，进行不同的配置
 def configure_os_environment():
@@ -308,9 +310,8 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     multiprocessing.freeze_support()  # 确保 PyInstaller 兼容 `multiprocessing`
 
-    # print("✅ [INFO] 启动 QApplication...", file=sys.stderr)
-    logging.debug("✅ [INFO] 启动 QApplication...")
-
+    # 配置日志
+    configure_logging()
     configure_os_environment()
 
     app = QApplication(sys.argv)
