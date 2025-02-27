@@ -3,6 +3,7 @@ import chromedriver_autoinstaller
 from selenium.webdriver.chrome.options import Options
 import subprocess
 import os
+import logging
 
 class DriverManager:
     _driver = None  # 存储全局 driver 实例
@@ -26,11 +27,11 @@ class DriverManager:
             
             # 确保文件存在
             if not os.path.exists(chrome_path):
-                print(f"🔥 [ERROR] 找不到 chrome.exe 文件: {chrome_path}")
+                logging.error(f"🔥 [ERROR] 找不到 chrome.exe 文件: {chrome_path}")
                 return None
             
             if not os.path.exists(chromedriver_path):
-                print(f"🔥 [ERROR] 找不到 chromedriver.exe 文件: {chromedriver_path}")
+                logging.error(f"🔥 [ERROR] 找不到 chromedriver.exe 文件: {chromedriver_path}")
                 return None
             
             chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
