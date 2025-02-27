@@ -219,15 +219,19 @@ class ImportOperationPage(QWidget):
             try:
                 driver = DriverManager.get_driver()  # 获取 driver
 
-                # 检查浏览器是否已关闭`
+                # 检查浏览器是否已关闭
                 if not is_browser_open(driver):
                     raise Exception("浏览器未开启或已关闭")
-                
+
                 login_process()
                 process_product_links(date_str)
                 QMessageBox.information(self, "完成", "提取操作完成")
             except Exception as e:
-                logging.error(f"提取时出错: {e}")
+                # 异常信息弹出到界面
+                error_message = f"提取时出错: {e}"
+                logging.error(error_message)  # 记录日志
+                QMessageBox.critical(self, "错误", error_message)  # 弹出错误信息
+                input()
                 DriverManager.close_driver()
             finally:
                 self.crawl_button.setEnabled(True)
