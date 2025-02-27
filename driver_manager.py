@@ -28,10 +28,12 @@ class DriverManager:
             # 确保文件存在
             if not os.path.exists(chrome_path):
                 logging.error(f"🔥 [ERROR] 找不到 chrome.exe 文件: {chrome_path}")
+                logging.getLogger().handlers[0].flush()
                 return None
             
             if not os.path.exists(chromedriver_path):
                 logging.error(f"🔥 [ERROR] 找不到 chromedriver.exe 文件: {chromedriver_path}")
+                logging.getLogger().handlers[0].flush()
                 return None
             
             chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})

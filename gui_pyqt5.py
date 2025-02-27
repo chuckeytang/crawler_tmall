@@ -218,11 +218,12 @@ class ImportOperationPage(QWidget):
         def crawl_thread():
             try:
                 driver = DriverManager.get_driver()  # 获取 driver
+                if driver is None:
+                    raise Exception("❌ DriverManager.get_driver() 返回 None，可能是 chromedriver.exe 路径错误")
 
-                # 检查浏览器是否已关闭
                 if not is_browser_open(driver):
-                    raise Exception("浏览器未开启或已关闭")
-
+                    raise Exception("❌ 浏览器未开启或已关闭")
+                
                 login_process()
                 process_product_links(date_str)
                 QMessageBox.information(self, "完成", "提取操作完成")
@@ -230,6 +231,7 @@ class ImportOperationPage(QWidget):
                 # 异常信息弹出到界面
                 error_message = f"提取时出错: {e}"
                 logging.error(error_message)  # 记录日志
+                logging.getLogger().handlers[0].flush()
                 QMessageBox.critical(self, "错误", error_message)  # 弹出错误信息
                 input()
                 DriverManager.close_driver()
