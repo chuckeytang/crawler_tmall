@@ -36,6 +36,16 @@ from tmall_crawler import login_process, process_product_links
 from db_manager import db_manager  # 使用全局实例
 from driver_manager import DriverManager
 
+# 设置日志配置
+logging.basicConfig(
+    level=logging.DEBUG, 
+    format="%(asctime)s - %(levelname)s - %(message)s", 
+    handlers=[
+        logging.StreamHandler(sys.stdout),  # 输出到控制台
+        logging.FileHandler("tmall_crawler_debug.log")  # 输出到文件
+    ]
+)
+
 # 检测操作系统，进行不同的配置
 def configure_os_environment():
     if sys.platform == "darwin":
