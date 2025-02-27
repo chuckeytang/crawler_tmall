@@ -212,8 +212,8 @@ class ImportOperationPage(QWidget):
         self.crawl_button.setEnabled(False)
         
         date_str = self.date_line.text().strip()
-        ignore_faults = self.ignore_faults_checkbox.isChecked()
-        recrawl = self.recrawl_checkbox.isChecked()
+        # ignore_faults = self.ignore_faults_checkbox.isChecked()
+        # recrawl = self.recrawl_checkbox.isChecked()
         
         def crawl_thread():
             try:
