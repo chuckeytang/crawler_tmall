@@ -1,3 +1,4 @@
+from dotenv import load_dotenv
 import undetected_chromedriver as uc
 import chromedriver_autoinstaller
 from selenium.webdriver.chrome.options import Options
@@ -21,7 +22,11 @@ class DriverManager:
             # chrome_options.add_argument("--disable-web-security")
             # chrome_options.add_argument("--disable-features=IsolateOrigins,site-per-process")
 
-            # 手动指定 chromedriver 路径
+            # 手动指定 chromedriver 路径# 确保从 exe 同级目录加载 .env 文件
+            dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+            load_dotenv(dotenv_path)  # 加载 .env 文件到环境变量中
+
+            # 获取环境变量
             chrome_path = os.path.normpath(os.getenv('CHROM_PATH', ''))
             chromedriver_path = os.path.normpath(os.getenv('CHROMEDRIVER_PATH', ''))
             
