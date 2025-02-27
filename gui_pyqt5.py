@@ -36,6 +36,17 @@ from tmall_crawler import login_process, process_product_links
 from db_manager import db_manager  # 使用全局实例
 from driver_manager import DriverManager
 
+# 检测操作系统，进行不同的配置
+def configure_os_environment():
+    if sys.platform == "darwin":
+        # MacOS 相关配置
+        os.environ["QT_MAC_WANTS_LAYER"] = "1"
+        os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+        logging.debug("✅ [INFO] 配置 MacOS 环境变量")
+    elif sys.platform == "win32":
+        # Windows 相关配置
+        logging.debug("✅ [INFO] 配置 Windows 环境变量")
+
 # print("✅ [INFO] db_manager 和 driver_manager 加载成功", file=sys.stderr)
 # logging.debug("✅ [INFO] db_manager 和 driver_manager 加载成功")
 def is_browser_open(driver):
@@ -43,6 +54,7 @@ def is_browser_open(driver):
         driver.title  # 尝试获取页面标题
         return True
     except:
+        logging.error(f"浏览器检查失败: {e}")
         return False
     
 class ImportOperationPage(QWidget):
@@ -145,6 +157,7 @@ class ImportOperationPage(QWidget):
             self.msg_label.setText(f"成功导入 {count} 条记录，其中 {duplicate_count} 条是重复的")
             self.refresh_table()
         except Exception as e:
+            logging.error(f"导入失败：{e}")
             QMessageBox.critical(self, "错误", f"导入失败：{e}")
     
     def refresh_table(self):
@@ -153,6 +166,7 @@ class ImportOperationPage(QWidget):
         try:
             rows = db_manager.query_ids_by_date(date_str, order_desc=True)
         except Exception as e:
+            logging.error(f"查询数据库失败：{e}")
             QMessageBox.critical(self, "错误", f"查询数据库出错：{e}")
             return
         
@@ -179,6 +193,7 @@ class ImportOperationPage(QWidget):
             db_manager.conn.commit()
             self.refresh_table()
         except Exception as e:
+            logging.error(f"清空记录失败：{e}")
             QMessageBox.critical(self, "错误", f"清空记录失败：{e}")
     
     def crawl(self):
@@ -200,7 +215,7 @@ class ImportOperationPage(QWidget):
                 process_product_links(date_str)
                 QMessageBox.information(self, "完成", "提取操作完成")
             except Exception as e:
-                print(f"提取时出错: {e}")
+                logging.error(f"提取时出错: {e}")
                 DriverManager.close_driver()
             finally:
                 self.crawl_button.setEnabled(True)
@@ -284,21 +299,12 @@ if __name__ == "__main__":
     multiprocessing.freeze_support()  # 确保 PyInstaller 兼容 `multiprocessing`
 
     # print("✅ [INFO] 启动 QApplication...", file=sys.stderr)
-    # logging.debug("✅ [INFO] 启动 QApplication...")
+    logging.debug("✅ [INFO] 启动 QApplication...")
 
-    # 如果应用是从 PyInstaller 打包后运行的，修正 `sys.argv`
-    if getattr(sys, 'frozen', False):
-        os.environ["QT_MAC_WANTS_LAYER"] = "1"
-        os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+    configure_os_environment()
 
     app = QApplication(sys.argv)
-    # print("✅ [INFO] QApplication 启动成功", file=sys.stderr)
-    # logging.debug("✅ [INFO] QApplication 启动成功")
-
     window = MainWindow()
     window.show()
-
-    # print("✅ [INFO] MainWindow 显示成功", file=sys.stderr)
-    # logging.debug("✅ [INFO] MainWindow 显示成功")
 
     sys.exit(app.exec_())
