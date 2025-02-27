@@ -4,9 +4,10 @@ import time
 import requests
 import json
 import traceback
+import os
 
 # 服务器 API 地址
-SERVER_URL = "http://localhost:5001"
+SERVER_URL = "http://"+os.path.normpath(os.getenv('SERVER_IP', ''))+":"+os.path.normpath(os.getenv('SERVER_PORT', ''))
 
 def get_mac_address():
     """获取当前设备的 MAC 地址"""
@@ -61,7 +62,7 @@ def send_sku_info_to_server(records):
 
     # 追加 MAC 地址和浏览器信息到每个记录
     mac_address = get_mac_address()
-    browser_info = "Chrome 128.0.6613.138"
+    browser_info = "Chrome 133"
 
     for record in records:
         record["mac_address"] = mac_address
@@ -71,7 +72,10 @@ def send_sku_info_to_server(records):
         response = requests.post(url, json={"sku_records": records}, headers=headers)
         if response.status_code == 200:
             print("SKU data batch uploaded successfully:", response.json())
+            return True
         else:
             print("Failed to upload SKU data batch:", response.text)
+            return False
     except requests.exceptions.RequestException as e:
         print("Network error or timeout:", e)
+        return False

@@ -26,7 +26,7 @@ chrome_options.add_argument("--blink-settings=imagesEnabled=false")
 chrome_options.add_argument("--disable-web-security")
 chrome_options.add_argument("--disable-features=IsolateOrigins,site-per-process")
 
-driver = uc.Chrome(use_subprocess=True, version_main=128, options=chrome_options)
+driver = uc.Chrome(use_subprocess=True, version_main=133, options=chrome_options)
 driver.implicitly_wait(10)
 
 # 模拟键盘向下箭头键滚动页面

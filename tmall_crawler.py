@@ -6,8 +6,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import NoAlertPresentException
 from driver_manager import DriverManager 
 
 import logging
@@ -27,6 +25,13 @@ import threading
 from server_api import send_error_to_server, send_sku_info_to_server
 from db_manager import DBManager, db_manager  # 使用全局实例
 
+
+class CrawlerBaseException(Exception):
+    """爬虫异常基类"""
+    def __init__(self, msg, original_exception=None):
+        super().__init__(msg)
+        self.original_exception = original_exception
+        
 stop_alert = False
 last_save_time = None  # 用于记录上次调用时间
 
@@ -169,9 +174,10 @@ def save_tmall_sku_info(local_db_manager, product_info, rate_info):
         local_db_manager.save_product_info(**record)
 
     # **批量发送到服务器**
-    send_sku_info_to_server(records)
-    print("商品信息已 保存到SQLite 并 上传到服务器")
-    
+    if send_sku_info_to_server(records):
+        print("商品信息已 保存到SQLite 并 上传到服务器")
+    else:
+        print("商品信息已保存上传失败")
     return 2
 
 def save_tmall_sku_info_toexcel(product_info, rate_info):
@@ -374,59 +380,56 @@ def extract_product_and_rate_info(product_link):
     driver = DriverManager.get_driver()
     logs = driver.get_log("performance")
     for entry in logs:
-        try:
-            message = json.loads(entry["message"])["message"]
-            if "Network.responseReceived" not in message["method"]:
-                continue
-            if "Network.responseReceivedExtraInfo" in message["method"]:
-                continue
+        message = json.loads(entry["message"])["message"]
+        if "Network.responseReceived" not in message["method"]:
+            continue
+        if "Network.responseReceivedExtraInfo" in message["method"]:
+            continue
 
-            response_url = message["params"]["response"]["url"]
-            request_id = message["params"]["requestId"]
+        response_url = message["params"]["response"]["url"]
+        request_id = message["params"]["requestId"]
+        
+        # 若为商品详情接口
+        if "mtop.taobao.pcdetail.data.get" in response_url:
+            response = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": request_id})
+            response_text = response.get("body", "")
+            # 去除 JSONP 回调包装
+            pattern = r"^[^(]+\((.*)\)$"
+            match = re.search(pattern, response_text)
+            if match:
+                json_str = match.group(1)
+            else:
+                json_str = response_text
+            data = json.loads(json_str)
+            product_info["data"] = data
             
-            # 若为商品详情接口
-            if "mtop.taobao.pcdetail.data.get" in response_url:
-                response = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": request_id})
-                response_text = response.get("body", "")
-                # 去除 JSONP 回调包装
-                pattern = r"^[^(]+\((.*)\)$"
-                match = re.search(pattern, response_text)
-                if match:
-                    json_str = match.group(1)
-                else:
-                    json_str = response_text
-                data = json.loads(json_str)
-                product_info["data"] = data
-                
-                # 错误处理
-                if isinstance(data, dict) and 'ret' in data:
-                    if any('FAIL_SYS_TOKEN_EMPTY' in s for s in data['ret']):
-                        print("检测到 FAIL_SYS_TOKEN_EMPTY 错误")
-                        return product_info, rate_info, 1
-                    if any('FAIL_SYS_USER_VALIDATE' in s for s in data['ret']):
-                        print("检测到 FAIL_SYS_USER_VALIDATE 错误")
-                        # 先重置 stop_alert 为 False
-                        stop_alert = False
-                        return product_info, rate_info, 0
-                print("解析后的商品详情数据：", data)
-            
-            # 若为评论数据接口
-            elif "mtop.taobao.rate.detaillist.get" in response_url:
-                response = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": request_id})
-                response_text = response.get("body", "")
-                pattern = r"^[^(]+\((.*)\)$"
-                match = re.search(pattern, response_text)
-                if match:
-                    json_str = match.group(1)
-                else:
-                    json_str = response_text
-                data = json.loads(json_str)
-                # 评论接口返回数据格式一般为：{"api": ..., "data": { ... }, ...}
-                # 取出 data.data 中的内容（如果需要调整，请根据实际数据结构修改）
-                rate_info["data"] = data.get("data", {})
-                print("解析后的评论数据：", rate_info["data"])
-        except Exception as e:
-            print(f"处理网络日志时出错: {e}")
+            # 错误处理
+            if isinstance(data, dict) and 'ret' in data:
+                if any('FAIL_SYS_TOKEN_EMPTY' in s for s in data['ret']):
+                    print("检测到 FAIL_SYS_TOKEN_EMPTY 错误")
+                    return product_info, rate_info, 1
+                if any('FAIL_SYS_USER_VALIDATE' in s for s in data['ret']):
+                    print("检测到 FAIL_SYS_USER_VALIDATE 错误")
+                    # 先重置 stop_alert 为 False
+                    stop_alert = False
+                    return product_info, rate_info, 0
+            print("解析后的商品详情数据：", data)
+        
+        # 若为评论数据接口
+        elif "mtop.taobao.rate.detaillist.get" in response_url:
+            response = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": request_id})
+            response_text = response.get("body", "")
+            pattern = r"^[^(]+\((.*)\)$"
+            match = re.search(pattern, response_text)
+            if match:
+                json_str = match.group(1)
+            else:
+                json_str = response_text
+            data = json.loads(json_str)
+            # 评论接口返回数据格式一般为：{"api": ..., "data": { ... }, ...}
+            # 取出 data.data 中的内容（如果需要调整，请根据实际数据结构修改）
+            rate_info["data"] = data.get("data", {})
+            print("解析后的评论数据：", rate_info["data"])
             
     return product_info, rate_info, 2
 
@@ -471,6 +474,7 @@ def process_product_links(date_filter=None):
             elif status == 1:  # 有错误但重试
                 print("提取信息失败，正在重试...")
                 continue  # **不增加 row_index，重新提取当前商品**
+            local_db_manager.mark_as_crawled(row_urlid)
 
             # 保存商品信息到 SQLite（save_tmall_sku_info 返回 1 成功，0 表示错误）
             status2 = save_tmall_sku_info(local_db_manager, product_info, rate_info)
@@ -482,10 +486,7 @@ def process_product_links(date_filter=None):
                 stop_alert = True
                 time.sleep(0.5)
                 continue # **不增加 row_index，重新提取当前商品**
-            
-            # 更新数据库，标记该记录已提取
-            cursor.execute("UPDATE id_list SET crawled = 1 WHERE urlid = ?", (row_urlid,))
-            conn.commit()
+            local_db_manager.mark_as_uploaded(row_urlid)
             
             print(f"商品 {product_id} 提取成功")
 
@@ -510,5 +511,10 @@ def process_product_links(date_filter=None):
 
             # 处理其他异常
             print(f"商品 {product_id} 发生错误，跳过: {e}")
+            # 通用异常转换
+            raise CrawlerBaseException(
+                f"商品 {product_id} 处理失败 | {error_message}",
+                original_exception=e
+            ) from e
         
         row_index += 1  # 处理下一行

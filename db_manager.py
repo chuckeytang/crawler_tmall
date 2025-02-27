@@ -198,9 +198,17 @@ class DBManager:
               delivery_area, product_image, crawl_time))
         self.conn.commit()
 
-    def close(self):
-        if self.conn:
-            self.conn.close()
+    def mark_as_uploaded(self, urlid):
+        """ 标记商品链接已上传 """
+        cursor = self.conn.cursor()
+        cursor.execute("UPDATE id_list SET uploaded = 1 WHERE urlid = ?", (urlid,))
+        self.conn.commit()
+
+    def mark_as_crawled(self, urlid):
+        """ 标记商品链接已爬取 """
+        cursor = self.conn.cursor()
+        cursor.execute("UPDATE id_list SET crawled = 1 WHERE urlid = ?", (urlid,))
+        self.conn.commit()
 
     def close(self):
         if self.conn:

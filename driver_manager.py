@@ -1,7 +1,7 @@
 import undetected_chromedriver as uc
+import chromedriver_autoinstaller
 from selenium.webdriver.chrome.options import Options
-import threading
-import time
+import subprocess
 import os
 
 class DriverManager:
@@ -20,17 +20,24 @@ class DriverManager:
             # chrome_options.add_argument("--disable-web-security")
             # chrome_options.add_argument("--disable-features=IsolateOrigins,site-per-process")
 
-            # 启用性能日志
+            # 手动指定 chromedriver 路径
+            chrome_path = os.path.normpath(os.getenv('CHROM_PATH', ''))
+            chromedriver_path = os.path.normpath(os.getenv('CHROMEDRIVER_PATH', ''))
+            
+            # 确保文件存在
+            if not os.path.exists(chrome_path):
+                print(f"🔥 [ERROR] 找不到 chrome.exe 文件: {chrome_path}")
+                return None
+            
+            if not os.path.exists(chromedriver_path):
+                print(f"🔥 [ERROR] 找不到 chromedriver.exe 文件: {chromedriver_path}")
+                return None
+            
             chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
 
             # 创建 driver
-            cls._driver = uc.Chrome(use_subprocess=True, version_main=128, options=chrome_options)
+            cls._driver = uc.Chrome(browser_executable_path=chrome_path, driver_executable_path=chromedriver_path, use_subprocess=True, version_main=133, options=chrome_options)
             cls._driver.implicitly_wait(10)
-
-            # 启动浏览器监控线程
-            cls._stop_monitor = False
-            cls._monitor_thread = threading.Thread(target=cls._monitor_browser, daemon=True)
-            cls._monitor_thread.start()
 
         return cls._driver
 
@@ -47,15 +54,3 @@ class DriverManager:
             cls._driver = None
             cls._stop_monitor = True  # 停止监控线程
         print("浏览器已关闭")
-
-    @classmethod
-    def _monitor_browser(cls):
-        """ 后台线程监测 driver 是否关闭 """
-        while not cls._stop_monitor:
-            time.sleep(2)
-            try:
-                if cls._driver and cls._driver.service.process.poll() is not None:
-                    print("检测到浏览器已关闭，强制退出")
-                    os._exit(1)  # 终止 Python 进程
-            except:
-                pass
